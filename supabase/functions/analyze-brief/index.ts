@@ -1,0 +1,161 @@
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
+};
+
+const SYSTEM_PROMPT = `You are BriefTrace, an academic assignment brief analyzer. Your job is to extract concrete, verifiable requirements from a university assignment brief and return them as structured JSON.
+
+INSTRUCTIONS:
+1. Extract every concrete requirement from the brief. Preserve specific details — exact word counts, minimum source numbers, required section names, formatting rules, due dates, submission methods. Do NOT summarize or generalize. If the brief says "2,500 words" keep "2,500 words", not "a word count requirement".
+2. Each requirement MUST include a source_passage: the EXACT sentence or phrase from the original text that this requirement was extracted from. Copy it verbatim, including original punctuation. This will be checked against the original text — if it doesn't match exactly, it will be marked as unverified.
+3. Assign each requirement to one of these categories:
+   - "Deliverables": what the student must produce (essays, reports, presentations, etc.)
+   - "Grading Criteria": how the work will be assessed, rubric details, weighting
+   - "Word Count": length requirements, page limits
+   - "References": source requirements, citation style, minimum number of sources
+   - "Formatting": font, spacing, margins, title page, file format requirements
+   - "Submission Instructions": how/where to submit, deadlines, file naming
+   - "Other": any valid requirement that doesn't fit the above categories
+4. For each requirement, set confidence to:
+   - "explicit": the requirement is clearly stated in the text
+   - "needs_review": the requirement is implied, ambiguous, or you're not confident in your interpretation
+5. If an expected category (like submission instructions or word count) has NO matching content in the supplied text, add it to the not_found array with a note explaining what was expected.
+6. Do NOT invent requirements that aren't in the text. Do NOT paraphrase the source_passage — copy it exactly.
+
+OUTPUT FORMAT (valid JSON only, no markdown, no explanation):
+{
+  "requirements": [
+    {
+      "category": "Deliverables",
+      "requirement_text": "Write a 2,500-word research essay on climate policy",
+      "source_passage": "Students must write a 2,500-word research essay on climate policy.",
+      "confidence": "explicit"
+    }
+  ],
+  "not_found": [
+    {
+      "category": "Submission Instructions",
+      "note": "No submission method or deadline was found in the supplied text."
+    }
+  ]
+}`;
+
+Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 200, headers: corsHeaders });
+  }
+
+  try {
+    const { brief } = await req.json();
+
+    if (!brief || typeof brief !== "string" || brief.trim().length === 0) {
+      return new Response(
+        JSON.stringify({ error: "No brief text provided." }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const apiKey = Deno.env.get("GEMINI_API_KEY");
+
+    if (!apiKey) {
+      return new Response(
+        JSON.stringify({
+          error: "AI analysis is not configured. The GEMINI_API_KEY secret is missing. Please add it in your project's Secrets settings.",
+        }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`;
+
+    const geminiBody = JSON.stringify({
+      system_instruction: {
+        parts: [{ text: SYSTEM_PROMPT }],
+      },
+      contents: [
+        {
+          parts: [{ text: brief }],
+        },
+      ],
+      generationConfig: {
+        responseMimeType: "application/json",
+        temperature: 0.1,
+        maxOutputTokens: 4096,
+      },
+    });
+
+    let geminiResponse: Response;
+    const maxRetries = 2;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      geminiResponse = await fetch(geminiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: geminiBody,
+      });
+
+      if (geminiResponse.ok || geminiResponse.status !== 503) break;
+
+      if (attempt < maxRetries) {
+        await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
+      }
+    }
+
+    if (!geminiResponse!.ok) {
+      if (geminiResponse!.status === 503) {
+        return new Response(
+          JSON.stringify({
+            error: "The AI service is temporarily unavailable. Please try again in a moment.",
+          }),
+          { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const errorBody = await geminiResponse!.text();
+
+      if (geminiResponse!.status === 429) {
+        return new Response(
+          JSON.stringify({
+            error: "The free AI quota has been reached for now. Please try again later.",
+          }),
+          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          error: `The AI service returned an error (status ${geminiResponse!.status}). ${errorBody.slice(0, 200)}`,
+        }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const geminiData = await geminiResponse!.json();
+
+    const extractedText =
+      geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!extractedText) {
+      return new Response(
+        JSON.stringify({
+          error: "The AI returned an empty response. Please try again.",
+        }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    return new Response(
+      JSON.stringify({ raw_text: extractedText }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  } catch (err) {
+    return new Response(
+      JSON.stringify({
+        error: `An unexpected error occurred: ${err.message || "Unknown error"}`,
+      }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+});
