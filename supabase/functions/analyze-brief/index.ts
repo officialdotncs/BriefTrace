@@ -90,8 +90,9 @@ Deno.serve(async (req: Request) => {
 
     let geminiResponse: Response;
     const maxRetries = 2;
-    const upstreamTimeoutMs = 45000;
+    const upstreamTimeoutMs = 90000;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const requestStart = Date.now();
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), upstreamTimeoutMs);
       try {
@@ -105,7 +106,9 @@ Deno.serve(async (req: Request) => {
         });
       } catch (fetchErr) {
         clearTimeout(timeoutId);
+        const elapsed = Date.now() - requestStart;
         if (fetchErr instanceof DOMException && fetchErr.name === "AbortError") {
+          console.log(`Gemini request timed out after ${elapsed}ms (attempt ${attempt + 1})`);
           return new Response(
             JSON.stringify({
               error: "The AI service took too long to respond. Please try again in a moment.",
@@ -116,6 +119,9 @@ Deno.serve(async (req: Request) => {
         throw fetchErr;
       }
       clearTimeout(timeoutId);
+
+      const elapsed = Date.now() - requestStart;
+      console.log(`Gemini responded with status ${geminiResponse.status} in ${elapsed}ms (attempt ${attempt + 1})`);
 
       if (geminiResponse.ok || geminiResponse.status !== 503) break;
 
