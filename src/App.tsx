@@ -16,7 +16,7 @@ export default function App() {
 
   const callEdgeFunction = useCallback(async (brief: string): Promise<string> => {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 70000);
+    const timeoutId = setTimeout(() => controller.abort(), 130000);
 
     let response: Response;
     try {
