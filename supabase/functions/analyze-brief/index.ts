@@ -22,24 +22,7 @@ RULES:
 6. confidence: "explicit" if clearly stated, "needs_review" if implied, ambiguous, or uncertain.
 7. If an expected category (submission instructions, word count) has NO matching content, add it to not_found with a note.
 8. Do NOT invent requirements. Do NOT paraphrase source_passage. Do NOT include a deadline if none is stated.
-
-OUTPUT FORMAT (valid JSON only, no markdown, no explanation):
-{
-  "requirements": [
-    {
-      "category": "Deliverables",
-      "requirement_text": "Write a 2,500-word research essay on climate policy",
-      "source_passage": "Students must write a 2,500-word research essay on climate policy.",
-      "confidence": "explicit"
-    }
-  ],
-  "not_found": [
-    {
-      "category": "Submission Instructions",
-      "note": "No submission method or deadline was found in the supplied text."
-    }
-  ]
-}`;
+9. Be concise. Return only the requirements array and not_found array. No explanations, no preamble, no markdown.`;
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -81,57 +64,48 @@ Deno.serve(async (req: Request) => {
       generationConfig: {
         responseMimeType: "application/json",
         temperature: 0.1,
-        maxOutputTokens: 4096,
+        maxOutputTokens: 2048,
         thinkingConfig: {
           thinkingLevel: "low",
         },
       },
     });
 
+    const upstreamTimeoutMs = 60000;
+    const requestStart = Date.now();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), upstreamTimeoutMs);
     let geminiResponse: Response;
-    const maxRetries = 2;
-    const upstreamTimeoutMs = 90000;
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const requestStart = Date.now();
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), upstreamTimeoutMs);
-      try {
-        geminiResponse = await fetch(geminiUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: geminiBody,
-          signal: controller.signal,
-        });
-      } catch (fetchErr) {
-        clearTimeout(timeoutId);
-        const elapsed = Date.now() - requestStart;
-        if (fetchErr instanceof DOMException && fetchErr.name === "AbortError") {
-          console.log(`Gemini request timed out after ${elapsed}ms (attempt ${attempt + 1})`);
-          return new Response(
-            JSON.stringify({
-              error: "The AI service took too long to respond. Please try again in a moment.",
-            }),
-            { status: 504, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-        throw fetchErr;
-      }
+    try {
+      geminiResponse = await fetch(geminiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: geminiBody,
+        signal: controller.signal,
+      });
+    } catch (fetchErr) {
       clearTimeout(timeoutId);
-
       const elapsed = Date.now() - requestStart;
-      console.log(`Gemini responded with status ${geminiResponse.status} in ${elapsed}ms (attempt ${attempt + 1})`);
-
-      if (geminiResponse.ok || geminiResponse.status !== 503) break;
-
-      if (attempt < maxRetries) {
-        await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
+      if (fetchErr instanceof DOMException && fetchErr.name === "AbortError") {
+        console.log(`Gemini request aborted by local timeout after ${elapsed}ms`);
+        return new Response(
+          JSON.stringify({
+            error: "The AI service took too long to respond. Please try again in a moment.",
+          }),
+          { status: 504, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       }
+      throw fetchErr;
     }
+    clearTimeout(timeoutId);
 
-    if (!geminiResponse!.ok) {
-      if (geminiResponse!.status === 503) {
+    const elapsed = Date.now() - requestStart;
+    console.log(`Gemini responded with status ${geminiResponse.status} in ${elapsed}ms`);
+
+    if (!geminiResponse.ok) {
+      if (geminiResponse.status === 503) {
         return new Response(
           JSON.stringify({
             error: "The AI service is temporarily unavailable. Please try again in a moment.",
@@ -140,18 +114,18 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      if (geminiResponse!.status === 504) {
+      if (geminiResponse.status === 504) {
         return new Response(
           JSON.stringify({
-            error: "The AI service took too long to respond. Please try again in a moment.",
+            error: "The AI service took too long to respond on its end. Please try again in a moment.",
           }),
           { status: 504, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
-      const errorBody = await geminiResponse!.text();
+      const errorBody = await geminiResponse.text();
 
-      if (geminiResponse!.status === 429) {
+      if (geminiResponse.status === 429) {
         return new Response(
           JSON.stringify({
             error: "The free AI quota has been reached for now. Please try again later.",
@@ -162,7 +136,7 @@ Deno.serve(async (req: Request) => {
 
       return new Response(
         JSON.stringify({
-          error: `The AI service returned an error (status ${geminiResponse!.status}). ${errorBody.slice(0, 200)}`,
+          error: `The AI service returned an error (status ${geminiResponse.status}). ${errorBody.slice(0, 200)}`,
         }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
