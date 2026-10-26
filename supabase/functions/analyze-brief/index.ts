@@ -4,24 +4,24 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-const SYSTEM_PROMPT = `You are BriefTrace, an academic assignment brief analyzer. Your job is to extract concrete, verifiable requirements from a university assignment brief and return them as structured JSON.
+const SYSTEM_PROMPT = `You are BriefTrace, an academic assignment brief analyzer. Extract concrete requirements from a university assignment brief and return them as structured JSON.
 
-INSTRUCTIONS:
-1. Extract every concrete requirement from the brief. Preserve specific details — exact word counts, minimum source numbers, required section names, formatting rules, due dates, submission methods. Do NOT summarize or generalize. If the brief says "2,500 words" keep "2,500 words", not "a word count requirement".
-2. Each requirement MUST include a source_passage: the EXACT sentence or phrase from the original text that this requirement was extracted from. Copy it verbatim, including original punctuation. This will be checked against the original text — if it doesn't match exactly, it will be marked as unverified.
-3. Assign each requirement to one of these categories:
-   - "Deliverables": what the student must produce (essays, reports, presentations, etc.)
-   - "Grading Criteria": how the work will be assessed, rubric details, weighting
+RULES:
+1. Extract each distinct requirement concisely. Preserve specific details verbatim — exact word counts, minimum source numbers, required section names, formatting rules, due dates, submission methods. Do NOT summarize or generalize. If the brief says "2,500 words" keep "2,500 words".
+2. Each requirement MUST include a source_passage: the EXACT sentence or phrase from the original text. Copy it verbatim including punctuation. It will be matched against the original text — if it doesn't match, it will be marked unverified.
+3. Do NOT duplicate requirements. Each distinct rule should appear once.
+4. Keep requirement_text concise — state the requirement, do not explain or elaborate.
+5. Categories (use exactly these):
+   - "Deliverables": what the student must produce
+   - "Grading Criteria": how the work will be assessed, rubric, weighting
    - "Word Count": length requirements, page limits
-   - "References": source requirements, citation style, minimum number of sources
-   - "Formatting": font, spacing, margins, title page, file format requirements
+   - "References": source requirements, citation style, minimum sources
+   - "Formatting": font, spacing, margins, title page, file format
    - "Submission Instructions": how/where to submit, deadlines, file naming
-   - "Other": any valid requirement that doesn't fit the above categories
-4. For each requirement, set confidence to:
-   - "explicit": the requirement is clearly stated in the text
-   - "needs_review": the requirement is implied, ambiguous, or you're not confident in your interpretation
-5. If an expected category (like submission instructions or word count) has NO matching content in the supplied text, add it to the not_found array with a note explaining what was expected.
-6. Do NOT invent requirements that aren't in the text. Do NOT paraphrase the source_passage — copy it exactly.
+   - "Other": valid requirements that don't fit above
+6. confidence: "explicit" if clearly stated, "needs_review" if implied, ambiguous, or uncertain.
+7. If an expected category (submission instructions, word count) has NO matching content, add it to not_found with a note.
+8. Do NOT invent requirements. Do NOT paraphrase source_passage. Do NOT include a deadline if none is stated.
 
 OUTPUT FORMAT (valid JSON only, no markdown, no explanation):
 {
@@ -82,19 +82,40 @@ Deno.serve(async (req: Request) => {
         responseMimeType: "application/json",
         temperature: 0.1,
         maxOutputTokens: 4096,
+        thinkingConfig: {
+          thinkingLevel: "low",
+        },
       },
     });
 
     let geminiResponse: Response;
     const maxRetries = 2;
+    const upstreamTimeoutMs = 45000;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      geminiResponse = await fetch(geminiUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: geminiBody,
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), upstreamTimeoutMs);
+      try {
+        geminiResponse = await fetch(geminiUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: geminiBody,
+          signal: controller.signal,
+        });
+      } catch (fetchErr) {
+        clearTimeout(timeoutId);
+        if (fetchErr instanceof DOMException && fetchErr.name === "AbortError") {
+          return new Response(
+            JSON.stringify({
+              error: "The AI service took too long to respond. Please try again in a moment.",
+            }),
+            { status: 504, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        throw fetchErr;
+      }
+      clearTimeout(timeoutId);
 
       if (geminiResponse.ok || geminiResponse.status !== 503) break;
 
@@ -110,6 +131,15 @@ Deno.serve(async (req: Request) => {
             error: "The AI service is temporarily unavailable. Please try again in a moment.",
           }),
           { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (geminiResponse!.status === 504) {
+        return new Response(
+          JSON.stringify({
+            error: "The AI service took too long to respond. Please try again in a moment.",
+          }),
+          { status: 504, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 

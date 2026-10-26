@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { MIN_BRIEF_LENGTH } from "../lib/constants";
+import { MIN_BRIEF_LENGTH, DEMO_BRIEF } from "../lib/constants";
 
 interface BriefInputProps {
   onAnalyze: (brief: string) => void;
@@ -16,6 +16,10 @@ export function BriefInput({ onAnalyze, isLoading }: BriefInputProps) {
     e.preventDefault();
     if (isEmpty || isLoading) return;
     onAnalyze(brief);
+  }
+
+  function handleDemo() {
+    setBrief(DEMO_BRIEF);
   }
 
   return (
@@ -51,7 +55,16 @@ export function BriefInput({ onAnalyze, isLoading }: BriefInputProps) {
             </p>
           )}
 
-          <div className="flex justify-center mt-6">
+          <div className="flex items-center justify-center gap-4 mt-6">
+            <button
+              type="button"
+              onClick={handleDemo}
+              disabled={isLoading}
+              className="text-sm text-teal-dark underline decoration-teal/30 underline-offset-4 hover:decoration-teal transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-teal focus:ring-offset-2 focus:ring-offset-cream rounded"
+            >
+              Try a demo brief
+            </button>
+
             <button
               type="submit"
               disabled={isEmpty || isLoading}
